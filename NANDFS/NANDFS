@@ -1,0 +1,3 @@
+NANDFS
+
+Project for modifying the NAND filesystem to boot the Linux kernel from the flash.
