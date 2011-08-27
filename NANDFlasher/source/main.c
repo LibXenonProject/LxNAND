@@ -46,7 +46,16 @@
 #define BB64MB_ONLY 1
 #define FULL_DUMP 0
 
+#define XELL_SIZE (256*1024)
+#define XELL_FOOTER_OFFSET (256*1024-16)
+#define XELL_FOOTER_LENGTH 16
+#define XELL_FOOTER "xxxxxxxxxxxxxxxx"
+
+#define XELL_OFFSET_COUNT         2
+static const unsigned int xelloffsets[XELL_OFFSET_COUNT] = {0x95060, // FreeBOOT Single-NAND main xell-2f
+                                                            0x100000}; // XeLL-Only Image
 unsigned int flashconfig;
+const unsigned char elfhdr[] = {0x7f, 'E', 'L', 'F'};
 
 void waitforexit(void)
 {
@@ -81,8 +90,8 @@ void prompt(int menu)
                 printf("Press A to save NAND to file on USB.\n");
                 printf("Press X to write file from USB to NAND.\n");
                 printf("Press B to shutdown the console.\n");
-                printf("Press Y to reboot the console.\n");
-                //printf("Press GUIDE to try DMA.\n");
+                printf("Press Y to update XeLL.\n");
+                printf("Press GUIDE to return to XeLL.\n");
         
                 struct controller_data_s controller;
                 while(1)
@@ -101,10 +110,10 @@ void prompt(int menu)
                         xenon_smc_power_shutdown();
                                
                     if((button.y)&&(!controller.y))
-                        xenon_smc_power_reboot();
+                        updateXeLL("uda:/updxell.bin");
                                         
-                    //if((button.logo)&&(!controller.logo))
-                    //    DMAreadNANDToFile();
+                    if((button.logo)&&(!controller.logo))
+                        return 0;
                                 
                     controller=button;
 		   }
@@ -265,6 +274,7 @@ void writeFileToFlash(char* path)
 	//Do what ever with buffer
 	for (i = 0; i < sfc.size_bytes_phys; i += sfc.block_sz_phys) 
         {
+		sfcx_erase_block(sfcx_rawaddress_to_block(i));
 		sfcx_write_block(&buf[i], sfcx_rawaddress_to_block(i)*sfc.block_sz);
 	}
 
@@ -297,8 +307,7 @@ int main(void)
                 printf(" ! Flashconfig: 0x%08X\n", flashconfig);
 		printf(" ! sfcx initialization failure\n");
 		printf(" ! nand related features will not be available\n");
-		delay(5);
-		return -1;
+		waitforexit();
         }
 
 	printf("Xenon_config_init.\n");
@@ -307,6 +316,122 @@ int main(void)
         prompt(MAIN_MENU);
         
 	return 0;
+}
+
+int updateXeLL(char *path)
+{
+    FILE *f;
+    int i, j, k, status, startblock, current, offsetinblock, blockcnt, filelength;
+    unsigned char *updxell, *user, *spare;
+    
+    /* Check if updxell.bin is present */
+    f = fopen(path, "rb");
+    if (!f){
+	printf(" ! Can't find / open %s\n",path);
+        waitforexit(); //Can't find/open updxell.bin from USB
+    }
+    
+    if (sfc.initialized != SFCX_INITIALIZED){
+        fclose(f);
+        printf(" ! sfcx is not initialized! Unable to update XeLL in NAND!\n");
+	waitforexit();
+    }
+   
+    /* Check filesize of updxell.bin, only accept full 256kb binaries */
+    fseek(f, 0, SEEK_END);
+    filelength=ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (filelength != XELL_SIZE){
+        fclose(f);
+        printf(" ! %s does not have the correct size of 256kb. Aborting update!\n", path);
+        waitforexit();
+    }
+    
+    printf(" * Update-XeLL binary found @ %s ! Looking for XeLL binary in NAND now.\n", path);
+    
+    for (k = 0; k < XELL_OFFSET_COUNT; k++)
+    {
+      current = xelloffsets[k];
+      offsetinblock = current % sfc.block_sz;
+      startblock = current/sfc.block_sz;
+      blockcnt = offsetinblock ? (XELL_SIZE/sfc.block_sz)+1 : (XELL_SIZE/sfc.block_sz);
+      
+    
+      spare = (unsigned char*)malloc(blockcnt*sfc.pages_in_block*sfc.meta_sz);
+      if(!spare){
+        printf(" ! Error while memallocating filebuffer (spare)\n");
+        waitforexit();
+      }
+      user = (unsigned char*)malloc(blockcnt*sfc.block_sz);
+      if(!user){
+        printf(" ! Error while memallocating filebuffer (user)\n");
+        waitforexit();
+      }
+      j = 0;
+
+      for (i = (startblock*sfc.pages_in_block); i< (startblock+blockcnt)*sfc.pages_in_block; i++)
+      {
+         sfcx_read_page(sfcx_page, (i*sfc.page_sz), 1);
+	 //Split rawpage into user & spare
+	 memcpy(&user[j*sfc.page_sz],&sfcx_page[0x0],sfc.page_sz);
+	 memcpy(&spare[j*sfc.meta_sz],&sfcx_page[sfc.page_sz],sfc.meta_sz);
+	 j++;
+      }
+      
+        if (memcmp(&user[offsetinblock+(XELL_FOOTER_OFFSET)],XELL_FOOTER,XELL_FOOTER_LENGTH) == 0){
+            printf(" * XeLL Binary found @ 0x%08X\n", (startblock*sfc.block_sz)+offsetinblock);
+        
+         updxell = (unsigned char*)malloc(XELL_SIZE);
+         if(!updxell){
+           printf(" ! Error while memallocating filebuffer (updxell)\n");
+           waitforexit();
+         }
+        
+         status = fread(updxell,1,XELL_SIZE,f);
+         if (status != XELL_SIZE){
+           fclose(f);
+           printf(" ! Error reading file from %s\n", path);
+           waitforexit();
+         }
+	 	 
+	 if (!memcmp(updxell, elfhdr, 4)){
+	   printf(" * really, we don't need an elf.\n");
+	   waitforexit();
+	 }
+
+         if (memcmp(&updxell[XELL_FOOTER_OFFSET],XELL_FOOTER, XELL_FOOTER_LENGTH)){
+	   printf(" ! XeLL does not seem to have matching footer, Aborting update!\n");
+	   waitforexit();
+	 }
+         
+         fclose(f);
+         memcpy(&user[offsetinblock], updxell,XELL_SIZE); //Copy over updxell.bin
+         printf(" * Writing to NAND!\n");
+	 j = 0;
+         for (i = startblock*sfc.pages_in_block; i < (startblock+blockcnt)*sfc.pages_in_block; i ++)
+         {
+	     if (!(i%sfc.pages_in_block))
+		sfcx_erase_block(i*sfc.page_sz);
+
+	     /* Copy user & spare data together in a single rawpage */
+             memcpy(&sfcx_page[0x0],&user[j*sfc.page_sz],sfc.page_sz);
+	     memcpy(&sfcx_page[sfc.page_sz],&spare[j*sfc.meta_sz],sfc.meta_sz);
+	     j++;
+
+	     if (!(sfcx_is_pageempty(sfcx_page))) // We dont need to write to erased pages
+	     {
+             memset(&sfcx_page[sfc.page_sz+0x0C],0x0, 4); //zero only EDC bytes
+             sfcx_calcecc((unsigned int *)sfcx_page); 	  //recalc EDC bytes
+             sfcx_write_page(sfcx_page, i*sfc.page_sz);
+	     }
+         }
+         printf(" * XeLL flashed! Reboot the xbox to enjoy the new build\n");
+	 for(;;);
+	
+      }
+    }
+    printf(" ! Couldn't locate XeLL binary in NAND. Aborting!\n");
+    waitforexit();
 }
 
 /*
