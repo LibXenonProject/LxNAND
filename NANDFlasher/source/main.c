@@ -274,7 +274,7 @@ void writeFileToFlash(char* path)
 	//Do what ever with buffer
 	for (i = 0; i < sfc.size_bytes_phys; i += sfc.block_sz_phys) 
         {
-		sfcx_erase_block(sfcx_rawaddress_to_block(i));
+		sfcx_erase_block(sfcx_rawaddress_to_block(i)*sfc.block_sz);
 		sfcx_write_block(&buf[i], sfcx_rawaddress_to_block(i)*sfc.block_sz);
 	}
 
