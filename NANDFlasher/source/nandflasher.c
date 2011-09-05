@@ -111,7 +111,7 @@ void writeFileToFlash(char* path)
   fseek(f, 0, SEEK_SET);
 
   //Check for correct filesize
-  if ((fileLen/sfc.block_sz_phys)*sfc.block_sz != nand_sz){
+  if (fileLen != NAND_SIZE_16MB_RAW  || fileLen != NAND_SIZE_64MB_RAW){
      printf(" ! Filesize of %s is unsupported!\n", path);
      waitforexit();
   }
@@ -296,7 +296,6 @@ int scanBadBlocksinFile(char *path)
     
     for (block = 0; block < filelength; block += sfc.block_sz_phys)
     {
-        printf(".");
         found = 0;
         memset(blockbuf,0xFF,sfc.block_sz_phys);
         fseek(f, block, SEEK_SET);
@@ -314,7 +313,7 @@ int scanBadBlocksinFile(char *path)
     }
     fclose(f);
     
-    printf("Following Bad Blocks found: ");
+    printf("\n\nFollowing Bad Blocks found: ");
     
     if(!BBMfile.BadBlocksCount)
         printf("none!\n");
@@ -353,7 +352,7 @@ int scanBadBlocksinNAND()
         }
         
         if (found){
-            BBMnand.BadBlocks[BBMnand.BadBlocksCount++] = sfcx_rawaddress_to_block(block);
+            BBMnand.BadBlocks[BBMnand.BadBlocksCount++] = sfcx_address_to_block(block);
         }
     }
     printf("\n\nFollowing Bad Blocks found: ");
