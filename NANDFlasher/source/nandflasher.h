@@ -21,6 +21,9 @@ unsigned int flashconfig;
 
 #define MAIN_MENU 1
 #define DUMP_SUBMENU 2
+#define ANALYZE_SUBMENU 3
+#define ANALYZE_PHYS_SUBMENU 4
+#define ANALYZE_FILE_SUBMENU 5
 
 #define BB64MB_ONLY 1
 #define FULL_DUMP 0
@@ -35,19 +38,22 @@ unsigned int flashconfig;
 static const unsigned int xelloffsets[XELL_OFFSET_COUNT] = {0x95060, // FreeBOOT Single-NAND main xell-2f
                                                             0x100000}; // XeLL-Only Image
 
-struct BadBlockManagment{
-  uint32_t BadBlocksCount;
-  uint32_t BadBlocks[32];  
-};
+typedef struct _BBM{
+  int BadBlocksCount;
+  int BadBlocks[0x20];
+  int EDCerrorCount;
+  int EDCerrorBlocks[0x400];
+}BBM,*PBBM;
 
 void waitforexit(void);
 void prompt(int menu);
 int main(void);
-void readNANDToFile(char *path, int bb_64mb_only);
-void writeFileToFlash(char* path);
+void readNand(char *path, int bb_64mb_only);
+void writeNand(char* path);
 int updateXeLL(char *path);
-int scanBadBlocksinFile(char *path);
-int scanBadBlocksinNAND();
+int analyzeFile(char *path,int firstblock,int lastblock,int edc);
+int analyzeNand(int first,int last,int edc);
+
 
 
 #ifdef	__cplusplus

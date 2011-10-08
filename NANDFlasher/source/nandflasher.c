@@ -19,11 +19,17 @@
 
 const unsigned char elfhdr[] = {0x7f, 'E', 'L', 'F'};
 
-struct BadBlockManagment BBMfile;
-struct BadBlockManagment BBMnand;
+BBM BBMfile;
+BBM BBMnand;
 
-/* Read the entire NAND to file */
-void readNANDToFile(char *path, int bb_64mb_only)
+/**
+* Read the NAND into a file.
+*
+* @param path - The path to the target file e.g "uda:/flashdmp.bin"
+* @param size the size of the packet buffer to allocate
+* @return none
+*/
+void readNand(char *path, int bb_64mb_only)
 {
   FILE *f;
   int i;
@@ -79,8 +85,15 @@ void readNANDToFile(char *path, int bb_64mb_only)
   waitforexit();
 }
 
-/* Read file from USB, to memory buffer, to NAND */
-void writeFileToFlash(char* path)
+/**
+* Allocate memory for a packet buffer for a given netbuf.
+*
+* @param buf the netbuf for which to allocate a packet buffer
+* @param size the size of the packet buffer to allocate
+* @return pointer to the allocated memory
+* NULL if no memory could be allocated
+*/
+void writeNand(char* path)
 {
   FILE *f;
   int i, reserved_blocks, nand_sz;
@@ -111,7 +124,9 @@ void writeFileToFlash(char* path)
   fseek(f, 0, SEEK_SET);
 
   //Check for correct filesize
-  if (fileLen != NAND_SIZE_16MB_RAW  || fileLen != NAND_SIZE_64MB_RAW){
+  if (fileLen == NAND_SIZE_16MB_RAW || fileLen == NAND_SIZE_64MB_RAW)
+     printf("updflash.bin has a valid filesize.");
+  else {
      printf(" ! Filesize of %s is unsupported!\n", path);
      waitforexit();
   }
@@ -126,7 +141,7 @@ void writeFileToFlash(char* path)
   }
 
   //Read file contents into buffer
-  printf("Please wait while reading file into buffer ... \n", path);
+  printf("Please wait while reading file into buffer ... \n");
   fread(buf, 1, fileLen, f);
   fclose(f);
         
@@ -157,6 +172,14 @@ void writeFileToFlash(char* path)
     waitforexit();
 }
 
+/**
+* Allocate memory for a packet buffer for a given netbuf.
+*
+* @param buf the netbuf for which to allocate a packet buffer
+* @param size the size of the packet buffer to allocate
+* @return pointer to the allocated memory
+* NULL if no memory could be allocated
+*/
 int updateXeLL(char *path)
 {
     FILE *f;
@@ -275,16 +298,27 @@ int updateXeLL(char *path)
     waitforexit();
 }
 
-int scanBadBlocksinFile(char *path)
+/**
+* Allocate memory for a packet buffer for a given netbuf.
+*
+* @param buf the netbuf for which to allocate a packet buffer
+* @param size the size of the packet buffer to allocate
+* @return pointer to the allocated memory
+* NULL if no memory could be allocated
+*/
+int analyzeFile(char *path,int firstblock,int lastblock,int mode)
 {
     FILE *f;
-    int found, i;
-    unsigned long filelength, block, page;
-    unsigned char* blockbuf;
+    int foundBB, foundEDC, block, page;
+    unsigned long filelength, offset;
+    unsigned char* pagebuf;
+    unsigned char EDC[3];
     BBMfile.BadBlocksCount = 0;
     
-    blockbuf = (unsigned char *)malloc(sfc.block_sz_phys);
+    pagebuf = (unsigned char *)malloc(sfc.page_sz_phys);
 
+    console_clrscr();
+    
     f = fopen(path, "rb");
     if (!f){
 	printf(" ! Can't open %s\n",path);
@@ -294,90 +328,270 @@ int scanBadBlocksinFile(char *path)
     filelength=ftell(f);
     fseek(f, 0, SEEK_SET);
     
-    for (block = 0; block < filelength; block += sfc.block_sz_phys)
+    printf("\nStarting Analyzing!\n\n");
+    
+    for (block = firstblock; block < lastblock; block++)
     {
-        found = 0;
-        memset(blockbuf,0xFF,sfc.block_sz_phys);
-        fseek(f, block, SEEK_SET);
-        fread(blockbuf,1,sfc.block_sz_phys,f);
+        printf("\rCurrently @ block %04X",block);
+        foundBB = 0;
+        foundEDC= 0;
         
-        for (page = 0; page < sfc.block_sz_phys; page += sfc.page_sz_phys)
+        for (page = 0; page < sfc.pages_in_block; page++)
         {
-            if(!sfcx_is_pageempty(&blockbuf[page]) && !sfcx_is_pagevalid(&blockbuf[page]))
-                found = 1;
+           offset = (block*sfc.block_sz_phys)+(page*sfc.page_sz_phys);
+           memset(pagebuf,0xFF,sfc.page_sz_phys);
+           fseek(f,offset,SEEK_SET);
+           fread(pagebuf,1,sfc.page_sz_phys,f);
+           
+            if(!sfcx_is_pageempty(pagebuf) && (!sfcx_is_pagevalid(pagebuf)))
+                foundBB = 1;
+           
+           if(mode == (1||2)){
+               memset(EDC,0,0x3);
+               memcpy(EDC,&pagebuf[sfc.page_sz_phys-0x3],0x3);
+               sfcx_calcecc(pagebuf);
+               
+               if (memcmp(EDC,&pagebuf[sfc.page_sz_phys-0x3],0x3))
+                   foundEDC = 1;
+           }
         }
         
-        if (found){
-            BBMfile.BadBlocks[BBMfile.BadBlocksCount++] = sfcx_rawaddress_to_block(block);
+        if (foundBB){
+            BBMfile.BadBlocks[BBMfile.BadBlocksCount++] = block;
+            printf("\nBad Block found @ %04X\n",block);
         }
+
+        if (foundEDC){
+            BBMfile.EDCerrorBlocks[BBMfile.EDCerrorCount++] = block;
+            printf("\nEDC Error found @ %04X\n",block);
+        }
+        
     }
     fclose(f);
     
-    printf("\n\nFollowing Bad Blocks found: ");
-    
-    if(!BBMfile.BadBlocksCount)
-        printf("none!\n");
-    else 
-    {
-        for(i=0;i<BBMfile.BadBlocksCount; i++)
-            printf("%04X ", BBMfile.BadBlocks[i]);
-    }
-    printf("\n");
-    
     return 0;
 }
 
-int scanBadBlocksinNAND()
+/**
+* Allocate memory for a packet buffer for a given netbuf.
+*
+* @param buf the netbuf for which to allocate a packet buffer
+* @param size the size of the packet buffer to allocate
+* @return pointer to the allocated memory
+* NULL if no memory could be allocated
+*/
+int analyzeNand(int first,int last,int mode)
 {
-    int found, i;
-    unsigned long nand_sz, block, page;
-    unsigned char* blockbuf;
+    int foundBB, foundEDC, block, page, status;
+    unsigned long offset;
+    unsigned char* pagebuf;
+    unsigned char EDC[3];
+    
     BBMnand.BadBlocksCount = 0;
     
-    blockbuf = (unsigned char *)malloc(sfc.block_sz_phys);
+    pagebuf = (unsigned char *)malloc(sfc.page_sz_phys);
     
-    nand_sz = sfc.size_bytes;
-    if (nand_sz == NAND_SIZE_256MB || nand_sz == NAND_SIZE_256MB)
-            nand_sz = NAND_SIZE_64MB; //Only 64MB dumps supported on Big Block consoles
+    console_clrscr();
     
-    for (block=0; block < nand_sz; block += sfc.block_sz)
+    printf("\nStarting Analyzation!\n\n");
+    
+    for (block=first; block < last; block++)
     {
-        found = 0;
-        sfcx_read_block(blockbuf,block,1);
-        
-        for (page=0; page < sfc.block_sz_phys; page += sfc.page_sz_phys)
+        printf("\rCurrently @ block %04X",block);
+        foundBB = 0;
+        foundEDC= 0;
+        for (page=0; page < sfc.pages_in_block; page++)
         {
-            if(!sfcx_is_pageempty(&blockbuf[page]) && !sfcx_is_pagevalid(&blockbuf[page]))
-                found = 1;
+            offset = (block*sfc.block_sz)+(page*sfc.page_sz);
+            status = sfcx_read_page(pagebuf,offset,1);
+            
+            if(!sfcx_is_pageempty(pagebuf) && !sfcx_is_pagevalid(pagebuf))
+                foundBB = 1;
+            
+            if(status & STATUS_BB_ER)
+                foundBB = 1;
+            
+           if(mode){
+               memset(EDC,0,0x3);
+               memcpy(EDC,&pagebuf[sfc.page_sz_phys-0x3],0x3);
+               sfcx_calcecc(pagebuf);
+               
+               if (memcmp(EDC,&pagebuf[sfc.page_sz_phys-0x3],0x3))
+                   foundEDC = 1;
+           }
         }
-        
-        if (found){
-            BBMnand.BadBlocks[BBMnand.BadBlocksCount++] = sfcx_address_to_block(block);
+        if (foundBB){
+            BBMnand.BadBlocks[BBMnand.BadBlocksCount++] = block;
+            printf("\nBad Block found @ %04X\n",block);
         }
+
+        if (foundEDC){
+            BBMnand.EDCerrorBlocks[BBMnand.EDCerrorCount++] = block;
+            printf("\nEDC Error found @ %04X\n",block);
+        }
+
     }
-    printf("\n\nFollowing Bad Blocks found: ");
-    
-    if(!BBMnand.BadBlocksCount)
-        printf("none!\n");
-    else 
-    {
-        for(i=0;i<BBMnand.BadBlocksCount; i++)
-            printf("%04X ", BBMnand.BadBlocks[i]);
-    }
-    printf("\n");
     
     return 0;
 }
 
-int eraseNand(int startblock, int blocklength)
+void printReport(BBM bbm)
 {
-    int i, status, err;
+    int i;
+    
+    if (!bbm.BadBlocksCount && !bbm.EDCerrorCount){
+        printf("\nNo errors found!\n");
+    }
+    
+    if (bbm.BadBlocksCount){
+      printf("\nFound %i bad block(s): ",bbm.BadBlocksCount);
+        for(i = 0; i < bbm.BadBlocksCount;i ++)
+            printf("0x%04X ",bbm.BadBlocks[i]);
+        printf("\n\n");
+    }
+    
+    if (bbm.EDCerrorCount){
+      printf("Found %i block(s) with wrong EDC: ",bbm.EDCerrorCount);
+         for(i = 0; i < bbm.EDCerrorCount;i ++)
+            printf("0x%04X ",bbm.EDCerrorBlocks[i]);
+        printf("\n\n");
+        }
+    
+}
 
-    for (i = startblock; i < startblock + blocklength; i++)
+/**
+* Erase NANDblocks.
+*
+* @param buf the netbuf for which to allocate a packet buffer
+* @param size the size of the packet buffer to allocate
+* @return pointer to the allocated memory
+* NULL if no memory could be allocated
+*/
+int eraseNand(int first, int last)
+{
+    int i, status;
+
+    for (i = first; i < first+(last-first); i++)
     {
         status = sfcx_erase_block(i*sfc.block_sz);
         if(!SFCX_SUCCESS(status))
             printf(" ! Error while erasing block %04X\n",i);
     }
     return 0;
+}
+
+int sfcx_DMAread_block(unsigned char *data, unsigned char *meta, int raw, unsigned long  rawlength, unsigned long length)
+{
+   int status;
+   sfcx_writereg(SFCX_STATUS, sfcx_readreg(SFCX_STATUS));
+   sfcx_writereg(SFCX_CONFIG, (sfcx_readreg(SFCX_CONFIG)|CONFIG_DMA_LEN));
+
+   // Set flash address (logical)
+   //address &= 0x3fffe00; // Align to page
+   sfcx_writereg(SFCX_ADDRESS, 0);
+   // Set the target address for data
+   sfcx_writereg(SFCX_DPHYSADDR,data-BASE_ADDRESS);
+   // Set the target address for meta
+   sfcx_writereg(SFCX_MPHYSADDR,meta-BASE_ADDRESS);
+   // Command the read
+   // Either a logical read (0x200 bytes, no meta data)
+   // or a Physical read (0x210 bytes with meta data)
+   sfcx_writereg(SFCX_COMMAND, raw ? DMA_PHY_TO_RAM : DMA_LOG_TO_RAM);
+
+   // Wait Busy
+   while ((status = sfcx_readreg(SFCX_STATUS)) & STATUS_BUSY);
+   if (!SFCX_SUCCESS(status))
+   {
+     if (status & STATUS_BB_ER)
+       printf(" ! SFCX: Bad block found at %08X\n");
+     else if (status & STATUS_ECC_ER)
+       // printf(" ! SFCX: (Corrected) ECC error at address %08X: %08X\n", address, status);
+     status = status;
+     else if (!raw && (status & STATUS_ILL_LOG))
+       printf(" ! SFCX: Illegal logical block at %08X (status: %08X)\n", status);
+     else
+       printf(" ! SFCX: Unknown error at address %08X: %08X. Please worry.\n", status);
+   }
+
+   // Set internal page buffer pointer to 0
+   sfcx_writereg(SFCX_ADDRESS, 0);
+
+   int i;
+   //int page_sz = raw ? sfc.page_sz_phys : sfc.page_sz;
+   for (i = 0; i < length; i += 4)
+   {
+     // Byteswap the data
+     *(int*)(&data[i]) = __builtin_bswap32(read32(&data[i]));
+   }
+   for (i = 0; i < (rawlength - length); i += 4) // sfc.block_sz_phys - sfc.block_sz == META SIZE
+   {
+     // Byteswap the data
+     *(int*)(&meta[i]) = __builtin_bswap32(read32(&meta[i]));
+   }
+
+   return status;
+}
+
+void dmatest()
+{
+    int i;
+    unsigned long j,k;
+   // unsigned char block_raw[sfc.block_sz_phys];
+    //unsigned char edc[3];
+    int size_blocks;
+    unsigned long size_bytes, size_bytes_raw;
+    FILE *f;
+    char *path = "uda:/dmatest2.bin";
+    
+    f = fopen(path, "wb");
+    if (!f){
+	printf(" ! Can't open %s\n",path);
+        waitforexit();
+    }
+    
+    if (sfc.size_bytes == NAND_SIZE_256MB || sfc.size_bytes == NAND_SIZE_256MB){
+        size_blocks = 0x200; //Only 64MB dumps supported on Big Block consoles
+        size_bytes = 0x4000000;
+        size_bytes_raw = 0x4200000;
+    }
+    
+    unsigned char dma_user[size_bytes];
+    unsigned char dma_spare[size_bytes_raw-size_bytes];
+    unsigned char dma_merge[size_bytes_raw];
+    
+    printf("DMA Length: %10X\n",(sfcx_readreg(SFCX_CONFIG)|CONFIG_DMA_LEN));
+    
+        //sfcx_read_block(block_raw,i*sfc.block_sz,1);
+        sfcx_DMAread_block(dma_user,dma_spare,1,size_bytes_raw,size_bytes);
+        
+        k = 0;
+        for (j=0; j<size_bytes_raw; j += sfc.page_sz_phys)
+        {
+            memcpy(&dma_merge[j],            &dma_user[k*sfc.page_sz],sfc.page_sz);
+            memcpy(&dma_merge[j+sfc.page_sz],&dma_spare[k*sfc.meta_sz],sfc.meta_sz);
+            k++;
+        }
+        //printf("Comparing Block (bytes %02X %02X %02X) %04X: ",dma_merge[0],dma_merge[1],dma_merge[2], i);
+        
+//        if (!memcmp(&dma_merge[0],&block_raw[0],sfc.block_sz_phys))
+//            printf("OK!\n");
+//        else
+//            printf("FAIL !\n"); 
+        
+/*        for (j=0; j<sfc.block_sz_phys; j += sfc.page_sz_phys)
+        {
+            memcpy(edc,&dma_merge[(j+sfc.page_sz_phys)-3],3);
+           sfcx_calcecc(&dma_merge[j]);
+            if (!memcmp(edc,&dma_merge[(j+sfc.page_sz_phys)-3],3))
+                printf("EDC OK!\n");
+            else
+                printf("EDC FAIL!\n"); 
+        } */
+
+        if (!(fwrite(dma_merge,1,size_bytes_raw,f)));
+                printf("fwrite fail!\n");
+                
+    fclose(f);
+        
+    printf("DONE!!!!\n");
 }
